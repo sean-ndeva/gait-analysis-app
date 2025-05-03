@@ -1,9 +1,11 @@
 streamlit
-imageio[ffmpeg]
-mediapipe==0.10.21
+mediapipe
 numpy
 pandas
 matplotlib
+imageio
+opencv-python-headless
+
 
 
 
