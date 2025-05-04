@@ -38,9 +38,9 @@ st.markdown(f"""
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
 
-# Utility: extract all pose landmarks into an array
+# Utility: extract all pose landmarks into an array using FFmpeg reader
 def extract_landmarks(video_path):
-    reader = iio.imiter(video_path, plugin="pyav")
+    reader = imageio.get_reader(video_path, "ffmpeg")
     pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
     landmarks = []
     for frame in reader:
@@ -51,6 +51,7 @@ def extract_landmarks(video_path):
             for lm in results.pose_landmarks.landmark:
                 row.extend([lm.x, lm.y, lm.z])
             landmarks.append(row)
+    reader.close()
     pose.close()
     return np.array(landmarks)
 
@@ -102,7 +103,6 @@ def main():
     # Process each uploaded video
     for label, video_file in [("East-to-West", vid1), ("West-to-East", vid2)]:
         if video_file:
-            # Save temp
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
             tmp.write(video_file.read()); path = tmp.name; tmp.close()
             st.subheader(f"Video Preview ({label})")
