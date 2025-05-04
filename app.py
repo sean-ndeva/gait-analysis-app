@@ -130,7 +130,7 @@ def main():
             reader = imageio.get_reader(path, "ffmpeg")
             cnt = reader.count_frames()
             for idx in [0, cnt//2, cnt-1]:
-                st.image(reader.get_data(idx), caption=f"{label} Frame {idx}", use_column_width=True)
+                st.image(reader.get_data(idx), caption=f"{label} Frame {idx}", use_container_width=True)
             reader.close()
 
             landmarks = extract_landmarks(path)
