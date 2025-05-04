@@ -3,7 +3,7 @@ mediapipe
 numpy
 pandas
 matplotlib
-imageio
+imageio[ffmpeg]
 opencv-python-headless
 
 
