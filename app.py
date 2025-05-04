@@ -4,151 +4,103 @@ import mediapipe as mp
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import imageio
+import imageio.v3 as iio
+import cv2  # Required for mediapipe even if not used directly
 
-
-st.set_page_config(page_title="Gait Analysis", layout="centered")
-st.title("👣 Gait Analysis App")
-st.sidebar.header("Optional Personal Information")
-
-height_cm = st.sidebar.slider("Your height (cm)", 140, 210, 175)
-weight_kg = st.sidebar.slider("Your weight (kg)", 40, 150, 70)
-age_group = st.sidebar.selectbox("Your age group", ["18-24", "25-30", "31-40", "41-50", "51-60", "60+"])
-
-bmi = weight_kg / ((height_cm / 100) ** 2)
-st.sidebar.write(f"**Your BMI:** {bmi:.1f}")
-
-st.sidebar.header("Customize Detection Sensitivity")
-
-asym_threshold = st.sidebar.slider(
-    "Max acceptable angle difference (°)", 
-    min_value=5, max_value=20, value=10
-)
-
-stiff_threshold = st.sidebar.slider(
-    "Min acceptable knee flexion (°)", 
-    min_value=90, max_value=140, value=120
-)
-
-# Display user inputs
-st.markdown(f"""
-**User Info**  
-- Height: {height_cm} cm  
-- Weight: {weight_kg} kg  
-- Age group: {age_group}  
-- BMI: {bmi:.1f}
-""")
-
-st.write("Upload a short walking video (MP4) and we'll analyze your knee angles.")
-
-# 1️⃣ Upload video
-video_file = st.file_uploader("Choose a walking video...", type=["mp4"])
-if not video_file:
-    st.stop()
-
-# 2️⃣ Save to temp file
-tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-tfile.write(video_file.read())
-video_path = tfile.name
-
-# 3️⃣ Initialize MediaPipe
 mp_drawing = mp.solutions.drawing_utils
-mp_pose    = mp.solutions.pose
-pose       = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
+mp_pose = mp.solutions.pose
 
-# 4️⃣ Process video and calculate angles
-left_angles, right_angles = [], []
+def extract_landmarks(video_path):
+    video_reader = iio.imiter(video_path, plugin="pyav")
+    pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
+    landmarks = []
 
-with st.spinner("🔍 Analyzing video..."):
-    try:
-        reader = imageio.get_reader(video_path, "ffmpeg")
-        for frame in reader:
-            results = pose.process(frame)
-            if results.pose_landmarks:
-                lm = results.pose_landmarks.landmark
-                def calc(a, b, c):
-                    a, b, c = np.array(a), np.array(b), np.array(c)
-                    rad = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
-                    deg = abs(np.degrees(rad))
-                    return 360 - deg if deg > 180 else deg
-                left = calc([lm[23].x, lm[23].y], [lm[25].x, lm[25].y], [lm[27].x, lm[27].y])
-                right = calc([lm[24].x, lm[24].y], [lm[26].x, lm[26].y], [lm[28].x, lm[28].y])
-                left_angles.append(left)
-                right_angles.append(right)
-        reader.close()
-    except Exception as e:
-        st.error(f"❌ Error reading video frames: {e}")
-        st.stop()
+    for frame in video_reader:
+        image = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        results = pose.process(image)
+        if results.pose_landmarks:
+            landmark_row = []
+            for lm in results.pose_landmarks.landmark:
+                landmark_row.extend([lm.x, lm.y, lm.z])
+            landmarks.append(landmark_row)
+    pose.close()
+    return np.array(landmarks)
 
-pose.close()
-os.unlink(video_path)
+def calculate_asymmetry(landmarks, left_idx, right_idx):
+    diffs = np.abs(landmarks[:, left_idx*3] - landmarks[:, right_idx*3])
+    return diffs
 
-# 5️⃣ Build DataFrame
-df = pd.DataFrame({
-    "Frame": range(len(left_angles)),
-    "LeftKnee": left_angles,
-    "RightKnee": right_angles
-})
-df["Diff"] = abs(df.LeftKnee - df.RightKnee)
+def display_preview_table(landmarks):
+    # Number of frames you want to display
+    num_frames = len(landmarks)
+    
+    # Select frames: first 4, middle 4, and last 4 frames
+    frames_to_show = []
+    
+    if num_frames >= 4:
+        # First four frames
+        frames_to_show.extend(landmarks[:4])
+        
+        # Middle four frames (or as many as possible if less than 4)
+        middle_start = max(4, num_frames // 2 - 2)
+        middle_end = min(num_frames, middle_start + 4)
+        frames_to_show.extend(landmarks[middle_start:middle_end])
+        
+        # Last four frames
+        frames_to_show.extend(landmarks[-4:])
+    
+    # Convert selected frames into a DataFrame for display in Streamlit
+    df = pd.DataFrame(frames_to_show, columns=[f"Landmark {i+1}" for i in range(landmarks.shape[1])])
+    
+    # Show the table in Streamlit
+    st.subheader("Preview of Selected Frames")
+    st.write(df)
 
-# 6️⃣ Display results
-st.subheader("Data Preview")
-st.dataframe(df.head())
+def main():
+    st.title("Gait Analysis & Asymmetry Detection App")
+    st.markdown("Upload a video for gait asymmetry analysis using MediaPipe.")
+    
+    uploaded_file = st.file_uploader("Upload a video file", type=["mp4", "mov", "avi"])
+    
+    if uploaded_file:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            tmp_path = tmp_file.name
 
-st.subheader("Knee Angle Plot")
-fig, ax = plt.subplots()
-ax.plot(df.Frame, df.LeftKnee, label="Left Knee")
-ax.plot(df.Frame, df.RightKnee, label="Right Knee")
-ax.set_xlabel("Frame")
-ax.set_ylabel("Angle (°)")
-ax.legend()
-st.pyplot(fig)
+        st.video(uploaded_file)
 
-# Download button
-csv = df.to_csv(index=False).encode("utf-8")
-st.download_button("📥 Download results as CSV", csv, "gait_analysis.csv", "text/csv")
+        with st.spinner("Analyzing video..."):
+            landmarks = extract_landmarks(tmp_path)
 
-# 7️⃣ Summary
-mean_diff = df.Diff.mean()
-max_diff  = df.Diff.max()
+        if landmarks.size == 0:
+            st.error("No landmarks detected. Try a different video.")
+            return
 
-st.subheader("Summary")
-st.write(f"- Mean left/right asymmetry: **{mean_diff:.1f}°**")
-st.write(f"- Max asymmetry: **{max_diff:.1f}°**")
-st.write(f"- Your BMI: **{bmi:.1f}**")
+        # Display the preview table with selected frames
+        display_preview_table(landmarks)
 
-# Peer comparison
-age_reference = {
-    "18-24": 8,
-    "25-30": 9,
-    "31-40": 10,
-    "41-50": 11,
-    "51-60": 12,
-    "60+": 14
-}
-normal_range = age_reference.get(age_group, 10)
-st.write(f"- Expected average asymmetry for your age group ({age_group}): **{normal_range}°**")
+        # Calculate and display hip asymmetry (existing code)
+        left_hip_idx, right_hip_idx = 23, 24
+        hip_diff = calculate_asymmetry(landmarks, left_hip_idx, right_hip_idx)
 
-if mean_diff > normal_range + 3:
-    st.warning("⚠️ Your gait asymmetry is higher than typical for your age group. You may consider consulting a specialist.")
-else:
-    st.success("✅ Your gait asymmetry is within the normal range for your age group.")
+        st.subheader("Hip Asymmetry Over Time")
+        fig, ax = plt.subplots()
+        ax.plot(hip_diff, label="Hip X-axis Difference")
+        ax.axhline(y=0.05, color='r', linestyle='--', label='Threshold')
+        ax.set_xlabel("Frame")
+        ax.set_ylabel("Asymmetry (abs diff)")
+        ax.legend()
+        st.pyplot(fig)
 
-# 8️⃣ Recommendations
-st.subheader("Recommendations")
-if mean_diff > asym_threshold:
-    st.write("📌 **Possible Irregularity:** Gait asymmetry detected.")
+        avg_asymmetry = np.mean(hip_diff)
+        st.write(f"Average Hip Asymmetry: **{avg_asymmetry:.4f}**")
 
-    if mean_diff > normal_range + 5:
-        st.error("🚨 The irregularity seems significant. Please consult a physiotherapist or orthopedic specialist.")
+        if avg_asymmetry < 0.05:
+            st.success(f"Asymmetry of {avg_asymmetry:.4f} detected: within normal range, but improvements could help prevent future issues.")
+        else:
+            st.warning(f"Asymmetry of {avg_asymmetry:.4f} detected: outside normal range. Consider improving balance and gait.")
 
-    st.write("🧘‍♀️ **Helpful Exercises:**")
-    st.markdown("""
-    - **Hip bridges**: Strengthen glutes and hamstrings  
-    - **Leg swings**: Improve balance and flexibility  
-    - **Step-ups**: Build lower body strength and coordination  
-    - **Lunges with form control**: Improve symmetry  
-    """)
-else:
-    st.write("🎉 No major issues detected. Keep up with regular walking or strength routines.")
+        os.remove(tmp_path)
 
+if __name__ == "__main__":
+    main()
