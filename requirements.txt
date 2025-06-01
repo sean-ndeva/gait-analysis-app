@@ -5,6 +5,8 @@ pandas
 matplotlib
 imageio[ffmpeg]
 opencv-python-headless
+streamlit-webrtc
+av
 
 
 
