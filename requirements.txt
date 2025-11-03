@@ -7,6 +7,6 @@ imageio==2.31.0
 imageio-ffmpeg==0.4.8
 opencv-python-headless==4.8.1.78
 streamlit-webrtc==0.47.9
-av==8.0.3
+av==10.0.0
 protobuf==4.25.3
 Pillow==10.0.0

@@ -5,3 +5,4 @@ libxrender1
 libxext6
 libx11-6
 ffmpeg
+pkg-config
