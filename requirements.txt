@@ -1,13 +1,13 @@
-streamlit
-mediapipe
-numpy
-pandas
-matplotlib
-imageio[ffmpeg]
-opencv-python-headless
-streamlit-webrtc
-av
-
-
+streamlit>=1.28.0
+mediapipe==0.10.0
+numpy>=1.21.0
+pandas>=1.3.0
+matplotlib>=3.5.0
+imageio[ffmpeg]>=2.19.0
+opencv-python-headless>=4.5.0
+streamlit-webrtc>=0.44.0
+av>=9.2.0
+protobuf>=3.20.0,<4.0.0
+Pillow>=9.0.0
 
 
