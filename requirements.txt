@@ -6,7 +6,7 @@ matplotlib==3.7.0
 imageio==2.31.0
 imageio-ffmpeg==0.4.8
 opencv-python-headless==4.8.1.78
-streamlit-webrtc==0.44.4
+streamlit-webrtc==0.47.9
 av==10.0.0
 protobuf==3.20.3
 Pillow==10.0.0
