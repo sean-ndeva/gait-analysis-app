@@ -8,11 +8,8 @@ import imageio # User requested to keep this despite imageio.v3 import
 import imageio.v3 as iio # User requested to keep this
 import cv2
 from io import BytesIO
-
-# Import for webcam functionality
-import av
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
-
+from datetime import datetime
+from PIL import Image
 
 # Streamlit page configuration
 st.set_page_config(page_title="Stride Buddy - AI Posture Coach", layout="wide")
@@ -455,189 +452,6 @@ def display_preview_table(landmarks_data):
     st.dataframe(df_preview)
     return df_preview
 
-# --- MODIFIED: VideoProcessor Class for Live Webcam ---
-class VideoProcessor(VideoProcessorBase):
-    def __init__(self, selected_exercise_name):
-        self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-        self.selected_exercise_name = selected_exercise_name
-        self.exercise_config = EXERCISES.get(selected_exercise_name)
-        self.feedback_messages = [] 
-
-        self.angles_to_calculate_config = [] 
-        if self.exercise_config and "landmark_points" in self.exercise_config:
-            for angle_name, landmark_indices in self.exercise_config["landmark_points"].items():
-                if len(landmark_indices) == 3:
-                    self.angles_to_calculate_config.append(
-                        (angle_name, landmark_indices[0], landmark_indices[1], landmark_indices[2])
-                    )
-        self.body_height_estimate = None 
-
-    def _generate_feedback(self, current_angles_dict, landmarks_mp, img_width, img_height):
-        feedback_to_show = []
-        if not self.exercise_config or not landmarks_mp:
-            return feedback_to_show
-
-        rules = self.exercise_config.get("feedback_rules", {})
-        phase_config = self.exercise_config.get("phase_detection", {})
-        
-        # MODIFIED: More robust body height estimation
-        try:
-            nose_lm = landmarks_mp[mp_pose.PoseLandmark.NOSE.value]
-            l_ankle_lm = landmarks_mp[mp_pose.PoseLandmark.LEFT_ANKLE.value]
-            r_ankle_lm = landmarks_mp[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
-
-            if nose_lm.visibility > 0.5 and l_ankle_lm.visibility > 0.5 and r_ankle_lm.visibility > 0.5:
-                nose_y = nose_lm.y
-                avg_ankle_y = (l_ankle_lm.y + r_ankle_lm.y) / 2.0
-                estimated_height = abs(nose_y - avg_ankle_y)
-                if estimated_height > 0.1: # Basic sanity check (normalized height shouldn't be too small)
-                    self.body_height_estimate = estimated_height
-            # If not all landmarks are visible or estimate is too small, 
-            # self.body_height_estimate retains its previous valid value or None.
-        except IndexError:
-            # print("Debug: Landmark index out of bounds during body height estimation.") # For debugging
-            pass # Should not happen if landmarks_mp is valid
-        except Exception as e_bhm:
-            # print(f"Debug: Error during body height estimation: {e_bhm}") # For debugging
-            pass
-
-        active_phase_name = None
-        if phase_config and "primary_angles_for_phase" in phase_config:
-            primary_angle_values = [current_angles_dict.get(pa) for pa in phase_config["primary_angles_for_phase"]]
-            primary_angle_values = [a for a in primary_angle_values if a is not None] 
-
-            if primary_angle_values:
-                avg_primary_angle = sum(primary_angle_values) / len(primary_angle_values)
-                for phase_info in phase_config.get("phases", []):
-                    meets_above = ("condition_angle_above" not in phase_info or avg_primary_angle > phase_info["condition_angle_above"])
-                    meets_below = ("condition_angle_below" not in phase_info or avg_primary_angle < phase_info["condition_angle_below"])
-                    meets_above_min = ("condition_angle_above_min" not in phase_info or avg_primary_angle > phase_info["condition_angle_above_min"])
-                    if meets_above and meets_below and meets_above_min:
-                        active_phase_name = phase_info["name"]
-                        break 
-
-        if active_phase_name and active_phase_name in rules:
-            for rule_name, rule_details in rules[active_phase_name].items():
-                if rule_name in current_angles_dict: 
-                    angle_val = current_angles_dict[rule_name]
-                    if angle_val is not None:
-                        if ("min" in rule_details and angle_val < rule_details["min"]) or \
-                           ("max" in rule_details and angle_val > rule_details["max"]):
-                            feedback_to_show.append(rule_details["feedback"])
-
-        if "general_form" in rules:
-            for rule_name, rule_details in rules["general_form"].items():
-                check_type = rule_details.get("check_type")
-                if check_type == "x_alignment" or check_type == "y_alignment":
-                    lm1_idx, lm2_idx = rule_details["landmark1"], rule_details["landmark2"]
-                    if landmarks_mp[lm1_idx].visibility < 0.5 or landmarks_mp[lm2_idx].visibility < 0.5:
-                        continue
-
-                    coord1 = landmarks_mp[lm1_idx].x if check_type == "x_alignment" else landmarks_mp[lm1_idx].y
-                    coord2 = landmarks_mp[lm2_idx].x if check_type == "x_alignment" else landmarks_mp[lm2_idx].y
-                    
-                    # MODIFIED: Fallback for tolerance
-                    tolerance_value = rule_details.get("tolerance", 0.05) # Default fixed tolerance
-                    if "tolerance_body_prop" in rule_details and self.body_height_estimate is not None and self.body_height_estimate > 0:
-                        tolerance_value = rule_details["tolerance_body_prop"] * self.body_height_estimate
-                    
-                    if abs(coord1 - coord2) > tolerance_value:
-                        feedback_to_show.append(rule_details["feedback"])
-                
-                elif rule_name in current_angles_dict: 
-                    angle_val = current_angles_dict[rule_name]
-                    if angle_val is not None:
-                        if ("min" in rule_details and angle_val < rule_details["min"]) or \
-                           ("max" in rule_details and angle_val > rule_details["max"]):
-                            feedback_to_show.append(rule_details["feedback"])
-        
-        return list(set(feedback_to_show))
-
-    # MODIFIED: recv method with enhanced error handling
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        try:
-            img = frame.to_ndarray(format="bgr24")
-            img = cv2.flip(img, 1) 
-
-            # print("Debug: Processing new frame...") # For debugging
-
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            results = self.pose.process(img_rgb)
-            img_h, img_w, _ = img.shape
-
-            current_angles_dict = {} 
-            angles_display_data = [] 
-
-            if results.pose_landmarks:
-                # print("Debug: Pose landmarks detected.") # For debugging
-                mp_drawing.draw_landmarks(
-                    image=img,
-                    landmark_list=results.pose_landmarks,
-                    connections=mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=mp_drawing.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2),
-                    connection_drawing_spec=mp_drawing.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2)
-                )
-
-                landmarks_mp = results.pose_landmarks.landmark
-
-                for angle_label, p1_idx, p2_idx, p3_idx in self.angles_to_calculate_config:
-                    try:
-                        if landmarks_mp[p1_idx].visibility < 0.3 or \
-                           landmarks_mp[p2_idx].visibility < 0.3 or \
-                           landmarks_mp[p3_idx].visibility < 0.3:
-                            current_angles_dict[angle_label] = None
-                            continue
-
-                        pt1 = [landmarks_mp[p1_idx].x, landmarks_mp[p1_idx].y, landmarks_mp[p1_idx].z]
-                        pt2 = [landmarks_mp[p2_idx].x, landmarks_mp[p2_idx].y, landmarks_mp[p2_idx].z]
-                        pt3 = [landmarks_mp[p3_idx].x, landmarks_mp[p3_idx].y, landmarks_mp[p3_idx].z]
-
-                        angle = calculate_joint_angle(pt1, pt2, pt3)
-                        current_angles_dict[angle_label] = angle
-                        angles_display_data.append(f"{angle_label}: {int(angle)}°")
-
-                        cv2.putText(img, f"{int(angle)}",
-                                    (int(landmarks_mp[p2_idx].x * img_w) + 10, int(landmarks_mp[p2_idx].y * img_h)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2, cv2.LINE_AA)
-                    except Exception as e_angle:
-                        # print(f"Debug: Error calculating angle {angle_label}: {e_angle}") # For debugging
-                        current_angles_dict[angle_label] = None
-                
-                # print("Debug: Angles calculated. Generating feedback...") # For debugging
-                self.feedback_messages = self._generate_feedback(current_angles_dict, landmarks_mp, img_w, img_h)
-                # print(f"Debug: Feedback generated: {self.feedback_messages}") # For debugging
-            # else:
-                # print("Debug: No pose landmarks detected in this frame.") # For debugging
-
-
-            display_text_angles = [f"Exercise: {self.selected_exercise_name}"] + angles_display_data
-            for i, text in enumerate(display_text_angles):
-                cv2.putText(img, text, (10, 30 + i * 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
-
-            if self.feedback_messages:
-                for i, msg in enumerate(self.feedback_messages):
-                    cv2.putText(img, msg, (10, img_h - 70 + i * 20), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
-            
-            # print("Debug: Frame processing complete.") # For debugging
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-        except Exception as e_recv:
-            print(f"ERROR in VideoProcessor.recv: {e_recv}") # Log any major error to terminal
-            # Create a blank frame with an error message to send back
-            # This helps keep the stream "alive" rather than just freezing
-            error_img = np.zeros((frame.height, frame.width, 3), dtype=np.uint8)
-            cv2.putText(error_img, "Processing Error", (50, frame.height // 2), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2, cv2.LINE_AA)
-            return av.VideoFrame.from_ndarray(error_img, format="bgr24")
-
-
-    def __del__(self): 
-        if hasattr(self, 'pose') and self.pose:
-            self.pose.close()
-
-
 # --- MAIN APP LOGIC ---
 st.header("Choose Your Video Input Method")
 
@@ -657,16 +471,158 @@ if input_method == "Live Webcam (Real-time Feedback)":
     exercise_data = EXERCISES.get(selected_exercise_name)
     if exercise_data and "description" in exercise_data:
         st.info(f"**Instructions for {selected_exercise_name}:** {exercise_data['description']}")
+    
+    # Custom webcam implementation
     st.warning("Grant camera permissions to start. Ensure good lighting and that your full body is visible for best results.")
 
-    webrtc_ctx = webrtc_streamer(
-        key="pose-estimation-webcam",
-        mode=WebRtcMode.SENDRECV,
-        video_processor_factory=lambda: VideoProcessor(selected_exercise_name=selected_exercise_name),
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]} 
-    )
+    # Initialize session state for webcam
+    if 'webcam_active' not in st.session_state:
+        st.session_state.webcam_active = False
+    if 'last_frame' not in st.session_state:
+        st.session_state.last_frame = None
+    if 'feedback_history' not in st.session_state:
+        st.session_state.feedback_history = []
+
+    # Webcam controls
+    col1, col2 = st.columns(2)
+    with col1:
+        if not st.session_state.webcam_active:
+            if st.button("🎥 Start Webcam", type="primary"):
+                st.session_state.webcam_active = True
+                st.rerun()
+        else:
+            if st.button("⏹️ Stop Webcam"):
+                st.session_state.webcam_active = False
+                st.rerun()
+    
+    with col2:
+        if st.session_state.webcam_active:
+            if st.button("📸 Capture Frame"):
+                if st.session_state.last_frame is not None:
+                    st.image(st.session_state.last_frame, caption="Captured Frame", use_container_width=True)
+
+    # Webcam feed
+    if st.session_state.webcam_active:
+        # Use Streamlit's camera input but process frames continuously
+        camera_img = st.camera_input("Real-time posture analysis", key="live_webcam")
+        
+        if camera_img:
+            # Process the frame
+            with st.spinner("Analyzing posture..."):
+                # Convert to OpenCV format
+                image = Image.open(camera_img)
+                img_array = np.array(image)
+                img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                
+                # Store the frame
+                st.session_state.last_frame = img_array
+                
+                # Process with MediaPipe
+                with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+                    results = pose.process(img_bgr)
+                    
+                    if results.pose_landmarks:
+                        # Create annotated image
+                        img_annotated = img_array.copy()
+                        mp_drawing.draw_landmarks(
+                            img_annotated,
+                            results.pose_landmarks,
+                            mp_pose.POSE_CONNECTIONS,
+                            landmark_drawing_spec=mp_drawing.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2),
+                            connection_drawing_spec=mp_drawing.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2)
+                        )
+                        
+                        # Calculate angles and provide feedback
+                        landmarks_mp = results.pose_landmarks.landmark
+                        img_h, img_w, _ = img_annotated.shape
+                        
+                        current_angles_dict = {}
+                        feedback_messages = []
+                        
+                        # Get exercise configuration
+                        exercise_config = EXERCISES.get(selected_exercise_name)
+                        if exercise_config and "landmark_points" in exercise_config:
+                            for angle_name, landmark_indices in exercise_config["landmark_points"].items():
+                                if len(landmark_indices) == 3:
+                                    p1_idx, p2_idx, p3_idx = landmark_indices
+                                    
+                                    if (landmarks_mp[p1_idx].visibility > 0.3 and 
+                                        landmarks_mp[p2_idx].visibility > 0.3 and 
+                                        landmarks_mp[p3_idx].visibility > 0.3):
+                                        
+                                        pt1 = [landmarks_mp[p1_idx].x, landmarks_mp[p1_idx].y, landmarks_mp[p1_idx].z]
+                                        pt2 = [landmarks_mp[p2_idx].x, landmarks_mp[p2_idx].y, landmarks_mp[p2_idx].z]
+                                        pt3 = [landmarks_mp[p3_idx].x, landmarks_mp[p3_idx].y, landmarks_mp[p3_idx].z]
+                                        
+                                        angle = calculate_joint_angle(pt1, pt2, pt3)
+                                        current_angles_dict[angle_name] = angle
+                                        
+                                        # Draw angle on image
+                                        cv2.putText(img_annotated, f"{int(angle)}°",
+                                                    (int(landmarks_mp[p2_idx].x * img_w) + 10, 
+                                                     int(landmarks_mp[p2_idx].y * img_h)),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2, cv2.LINE_AA)
+                        
+                        # Display results
+                        st.subheader("Live Analysis Results")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.image(img_annotated, caption="Live Pose Analysis", use_container_width=True)
+                        
+                        with col2:
+                            st.write("**Current Joint Angles:**")
+                            for angle_name, angle_value in current_angles_dict.items():
+                                st.write(f"- {angle_name}: {angle_value:.1f}°")
+                            
+                            # Provide real-time feedback
+                            st.write("**Feedback:**")
+                            if current_angles_dict:
+                                # Simple feedback logic - you can expand this with your existing rules
+                                if "right_knee" in current_angles_dict:
+                                    knee_angle = current_angles_dict["right_knee"]
+                                    if knee_angle < 80:
+                                        st.warning("🔴 Knee angle too deep")
+                                    elif knee_angle > 160:
+                                        st.info("🔵 Standing position")
+                                    else:
+                                        st.success("🟢 Good knee position")
+                                
+                                if "right_elbow" in current_angles_dict:
+                                    elbow_angle = current_angles_dict["right_elbow"]
+                                    if elbow_angle < 70:
+                                        st.warning("🔴 Elbow too bent")
+                                    elif elbow_angle > 170:
+                                        st.info("🔵 Arm extended")
+                                    else:
+                                        st.success("🟢 Good arm position")
+                                
+                                # Store feedback for history
+                                feedback_entry = {
+                                    "timestamp": datetime.now().strftime("%H:%M:%S"),
+                                    "angles": current_angles_dict.copy()
+                                }
+                                st.session_state.feedback_history.append(feedback_entry)
+                                
+                                # Keep only last 10 entries
+                                if len(st.session_state.feedback_history) > 10:
+                                    st.session_state.feedback_history.pop(0)
+                            else:
+                                st.warning("No angles calculated - ensure full body visibility")
+                    
+                    else:
+                        st.warning("No pose detected. Please ensure your full body is visible in the frame.")
+        
+        # Feedback history
+        if st.session_state.feedback_history:
+            st.subheader("Recent Feedback History")
+            for i, feedback in enumerate(reversed(st.session_state.feedback_history[-5:])):
+                with st.expander(f"Frame {len(st.session_state.feedback_history)-i} - {feedback['timestamp']}"):
+                    for angle_name, angle_value in feedback['angles'].items():
+                        st.write(f"{angle_name}: {angle_value:.1f}°")
+    
+    else:
+        st.info("Click 'Start Webcam' to begin real-time posture analysis")
     
 elif input_method == "Upload Walking Videos (Detailed Gait Analysis)":
     st.markdown("### Upload Two Walking Videos (Opposite Directions)")
@@ -809,4 +765,3 @@ elif input_method == "Upload Walking Videos (Detailed Gait Analysis)":
 
 st.sidebar.markdown("---")
 st.sidebar.info("Stride Buddy v0.3 - AI Posture Coach (Improved Stability)")
-
