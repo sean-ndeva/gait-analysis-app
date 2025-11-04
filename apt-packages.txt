@@ -6,3 +6,11 @@ libxext6
 libx11-6
 ffmpeg
 pkg-config
+python3-dev
+build-essential
+libavdevice-dev
+libavformat-dev
+libavcodec-dev
+libavutil-dev
+libswscale-dev
+libswresample-dev
