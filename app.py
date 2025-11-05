@@ -4,7 +4,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 import io
-
+try:
+    import cv2
+    st.sidebar.success("✅ OpenCV loaded successfully!")
+    CV_AVAILABLE = True
+except ImportError as e:
+    st.sidebar.error(f"❌ OpenCV failed: {e}")
+    CV_AVAILABLE = False
 # Simple app that actually works
 st.set_page_config(page_title="Stride Buddy - Working Version", layout="wide")
 st.title("👣 Stride Buddy - Fitness Coach")
